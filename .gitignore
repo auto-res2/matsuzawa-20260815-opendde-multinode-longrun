@@ -181,6 +181,8 @@ models/
 *.pt
 *.gz
 *.csv
+# ...but experiment results are the record of a run, not scratch data.
+!.research/results/**/*.csv
 *.tsv
 *.x
 *.y

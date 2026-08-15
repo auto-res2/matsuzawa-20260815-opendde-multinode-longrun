@@ -40,4 +40,4 @@ RUN mkdir -p .research/results
 # The execution platform runs this CMD verbatim when the image is built from a
 # committed Dockerfile, so it must invoke the experiment rather than a shell.
 # A CMD of ["bash"] exits 0 with no work done and is reported as a success.
-CMD ["uv", "run", "python", "-u", "-m", "src.main", "mode=full"]
+CMD ["uv", "run", "python", "-u", "-m", "src.main", "mode=sanity"]

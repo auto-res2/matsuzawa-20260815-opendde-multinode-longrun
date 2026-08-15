@@ -1,0 +1,66 @@
+# Base Dockerfile for AIRAS ML Experiments
+# This provides a reproducible environment for all experiment stages
+
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv package manager
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy dependency files
+COPY pyproject.toml ./
+# Copy uv.lock if it exists (wildcard makes it optional)
+COPY uv.lock* ./
+
+# Install Python dependencies using uv
+# This layer will be cached unless dependencies change
+RUN uv sync --frozen || uv sync
+
+# Copy the rest of the application
+COPY . .
+
+# Create results directory
+RUN mkdir -p .research/results
+
+# Predict FoldBench antibody-antigen targets with both checkpoints, then score
+# both with DockQ in one job: evaluate.py needs every run's
+# prediction_reference.csv present at once to compute the gap between them.
+ENV OPENDDE_ROOT_DIR=/data1/rkp00041/rku00122/opendde-multinode/opendde_data
+ENV PYTHONPATH=/workspace
+CMD ["sh", "-c", "set -e; \
+R=.research/results; \
+for pair in 'baseline-pretrained /data1/rkp00041/rku00122/opendde-multinode/opendde_data/checkpoint/opendde.pt' 'proposed-opendde-openfold3 /data1/rkp00041/rku00122/opendde-multinode/checkpoints/finetuned-4node-30ep.pt'; do \
+  set -- $pair; RID=$1; CKPT=$2; \
+  echo \"=== inference $RID ===\"; \
+  /data1/rkp00041/rku00122/opendde-multinode/opendde-src/.venv/bin/python -u -m src.inference \
+    --checkpoint $CKPT \
+    --targets-dir /data1/rkp00041/plinder_lddt_pli_improvement/data/foldbench/FoldBench/targets \
+    --ground-truth-dir /data1/rkp00041/plinder_lddt_pli_improvement/data/foldbench/ground_truth_20250520 \
+    --prediction-dir $R/$RID/prediction \
+    --evaluation-dir $R/$RID/evaluation \
+    --target-type interface_antibody_antigen \
+    --limit 16 --max-atoms 8000 --n-step 20 --n-sample 1 --device cuda; \
+done; \
+echo '=== evaluate ==='; \
+/data1/rkp00041/rku00122/opendde-multinode/opendde-src/.venv/bin/python -u -m src.evaluate \
+  --results-dir $R \
+  --run-ids baseline-pretrained proposed-opendde-openfold3 \
+  --targets-dir /data1/rkp00041/plinder_lddt_pli_improvement/data/foldbench/FoldBench/targets \
+  --ground-truth-dir /data1/rkp00041/plinder_lddt_pli_improvement/data/foldbench/ground_truth_20250520 \
+  --target-type interface_antibody_antigen \
+  --ost-bin /data1/rkp00041/.local/bin/ost"]
