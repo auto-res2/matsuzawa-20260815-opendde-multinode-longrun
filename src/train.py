@@ -590,16 +590,22 @@ def run(args: argparse.Namespace) -> int:
     # whichever shard rank 0 happened to get.
     curve = _reduce_epoch_curve(epoch_means, info, device)
     stats = _reduce_stats(losses, info, device)
+    passed = True
     if info.is_main:
         _save_curve(curve, args.save_checkpoint)
-        _emit_verdict(args, stats, summarize_placement(placement), elapsed, step)
+        passed = _emit_verdict(
+            args, stats, summarize_placement(placement), elapsed, step
+        )
+        _save_placement(placement, args.save_checkpoint)
         if args.save_checkpoint:
             _save(model, args.save_checkpoint)
 
     if info.distributed:
         dist.barrier()
         dist.destroy_process_group()
-    return 0
+    # A printed FAIL that exits 0 is recorded by the scheduler as a success,
+    # which is the very confusion this verdict exists to remove.
+    return 0 if passed else 1
 
 
 def _reduce_epoch_curve(
@@ -617,6 +623,22 @@ def _reduce_epoch_curve(
         dist.all_reduce(local, op=dist.ReduceOp.SUM)
         local /= info.world_size
     return [round(v, 6) for v in local.tolist()]
+
+
+def _save_placement(records: list[dict[str, Any]], checkpoint_path: str) -> None:
+    """Archive the per-rank placement records next to the checkpoint.
+
+    The summary is printed to the log, but a log is not an artifact: the claim
+    that sixteen ranks sat on four hosts has to be checkable from the
+    repository alone, without the scheduler's log retention.
+    """
+    if not checkpoint_path:
+        return
+    out = Path(checkpoint_path).parent / "placement.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"ranks": sorted(records, key=lambda r: r["rank"])},
+                              indent=2))
+    logger.info("wrote %s (%d ranks)", out, len(records))
 
 
 def _save_curve(curve: list[float], checkpoint_path: str) -> None:
@@ -673,7 +695,7 @@ def _emit_verdict(
     placement: dict[str, Any],
     elapsed: float,
     steps: int,
-) -> None:
+) -> bool:
     prefix = args.verdict_prefix
     reasons = []
     if stats["steps"] < args.min_steps:
@@ -698,6 +720,7 @@ def _emit_verdict(
         **placement,
     }
     print(f"{prefix}_SUMMARY {json.dumps(summary, sort_keys=True)}", flush=True)
+    return not reasons
 
 
 def _finite(x: float) -> bool:
